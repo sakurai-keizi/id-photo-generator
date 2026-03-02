@@ -35,6 +35,12 @@ uv run main.py photo.jpg output.png
 
 初回実行時に `yolov8n-pose.pt` モデルが自動ダウンロードされます。
 
+## サンプル
+
+| 変換前 (`photo.jpg`) | 変換後 (`output.png`) |
+|:---:|:---:|
+| ![変換前](photo.jpg) | ![変換後](output.png) |
+
 ## 出力仕様
 
 | 項目 | 値 |
