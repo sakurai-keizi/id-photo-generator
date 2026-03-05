@@ -20,11 +20,12 @@
 
 # 使い方: uv run main.py <入力画像> <出力PNG>
 
+import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 from ultralytics import YOLO
 
 DPI = 300
@@ -48,6 +49,90 @@ def mm_to_px(mm):
     return round(mm / 25.4 * DPI)
 
 
+def ask_yes_no(question):
+    print(f"\n{question}")
+    print("  1. はい")
+    print("  2. いいえ")
+    while True:
+        try:
+            ans = input("番号を入力してください: ").strip()
+            if ans == "1":
+                return True
+            if ans == "2":
+                return False
+        except EOFError:
+            return False
+        print("  1 か 2 を入力してください。")
+
+
+def get_printers():
+    result = subprocess.run(
+        ["powershell.exe", "-Command", "Get-Printer | Select-Object -ExpandProperty Name"],
+        capture_output=True, text=True,
+    )
+    return [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
+
+
+def select_printer():
+    printers = get_printers()
+    if not printers:
+        print("プリンターが見つかりませんでした。")
+        return None
+    print("\n【プリンターを選んでください】")
+    for i, name in enumerate(printers, 1):
+        print(f"  {i}. {name}")
+    while True:
+        try:
+            choice = int(input("番号を入力してください: "))
+            if 1 <= choice <= len(printers):
+                return printers[choice - 1]
+        except ValueError:
+            pass
+        except EOFError:
+            print("\n入力がありません。終了します。")
+            sys.exit(1)
+        print(f"  1〜{len(printers)} の番号を入力してください。")
+
+
+def print_borderless(image_path, printer_name, paper_w_mm, paper_h_mm):
+    win_path = subprocess.run(
+        ["wslpath", "-w", str(Path(image_path).resolve())],
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    # 用紙サイズ: mm → 1/100インチ単位（System.Drawing.Printing の単位）
+    w_hundredths = round(paper_w_mm / 25.4 * 100)
+    h_hundredths = round(paper_h_mm / 25.4 * 100)
+
+    safe_path    = win_path.replace("'", "''")
+    safe_printer = printer_name.replace("'", "''")
+
+    ps_script = f"""
+Add-Type -AssemblyName System.Drawing
+$img = [System.Drawing.Image]::FromFile('{safe_path}')
+$pd  = New-Object System.Drawing.Printing.PrintDocument
+$pd.PrinterSettings.PrinterName       = '{safe_printer}'
+$pd.DefaultPageSettings.Margins       = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
+$pd.DefaultPageSettings.PaperSize     = New-Object System.Drawing.Printing.PaperSize('Custom', {w_hundredths}, {h_hundredths})
+$imgRef = $img
+$pd.add_PrintPage({{
+    param($sender, $e)
+    $e.Graphics.DrawImage($imgRef, $e.PageBounds)
+}})
+$pd.Print()
+$img.Dispose()
+Write-Host '印刷ジョブを送信しました。'
+"""
+    result = subprocess.run(
+        ["powershell.exe", "-Command", ps_script],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+    else:
+        print(f"印刷エラー: {result.stderr.strip()}")
+
+
 def select_from_menu(title, options):
     print(f"\n{title}")
     names = list(options.keys())
@@ -68,7 +153,7 @@ def select_from_menu(title, options):
 
 def generate_id_photo(input_path, output_path, id_w_mm, id_h_mm, paper_w_mm, paper_h_mm):
     Image.MAX_IMAGE_PIXELS = None  # 高解像度カメラ画像の制限を解除
-    img = Image.open(input_path).convert("RGB")
+    img = ImageOps.exif_transpose(Image.open(input_path)).convert("RGB")
     W, H = img.size
 
     # YOLOv8 ポーズ推定で最初の人物を検出
@@ -127,3 +212,8 @@ if __name__ == "__main__":
     paper_w_mm, paper_h_mm = select_from_menu("【印刷用紙のサイズを選んでください】", PAPER_SIZES)
 
     generate_id_photo(sys.argv[1], sys.argv[2], id_w_mm, id_h_mm, paper_w_mm, paper_h_mm)
+
+    if ask_yes_no("【フチなし印刷しますか？】"):
+        printer = select_printer()
+        if printer:
+            print_borderless(sys.argv[2], printer, paper_w_mm, paper_h_mm)
