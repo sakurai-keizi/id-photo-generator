@@ -44,13 +44,6 @@ PAPER_SIZES = {
     "A4（210mm × 297mm）": (210.0, 297.0),
 }
 
-# 各値は (Windows PaperSourceKind, CUPS InputSlot)
-TRAY_OPTIONS = {
-    "前トレイ": ("Upper",      "Front"),
-    "後トレイ": ("Lower",      "Rear"),
-    "自動":     ("AutoSelect", "Auto"),
-}
-
 # 各値は (Windows PrinterResolutionKind, CUPS print-quality)
 QUALITY_OPTIONS = {
     "下書き（Draft）":  ("Draft",  "3"),
@@ -82,6 +75,50 @@ def get_printers():
     else:
         result = subprocess.run(["lpstat", "-a"], capture_output=True, text=True)
         return [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
+
+
+def get_trays(printer_name):
+    if is_wsl():
+        safe_printer = printer_name.replace("'", "''")
+        ps_script = f"""
+Add-Type -AssemblyName System.Drawing
+$pd = New-Object System.Drawing.Printing.PrintDocument
+$pd.PrinterSettings.PrinterName = '{safe_printer}'
+$pd.PrinterSettings.PaperSources | ForEach-Object {{ $_.SourceName }}
+"""
+        result = subprocess.run(["powershell.exe", "-Command", ps_script], capture_output=True)
+        output = result.stdout.decode("cp932", errors="replace")
+        return [line.strip() for line in output.strip().splitlines() if line.strip()]
+    else:
+        result = subprocess.run(
+            ["lpoptions", "-p", printer_name, "-l"], capture_output=True, text=True,
+        )
+        for line in result.stdout.splitlines():
+            if line.startswith("InputSlot/"):
+                _, values_str = line.split(":", 1)
+                return [v.lstrip("*") for v in values_str.split()]
+        return ["Auto"]
+
+
+def select_tray(printer_name):
+    trays = get_trays(printer_name)
+    if not trays:
+        print("トレイ情報を取得できませんでした。")
+        return None
+    print("\n【給紙トレイを選んでください】")
+    for i, name in enumerate(trays, 1):
+        print(f"  {i}. {name}")
+    while True:
+        try:
+            choice = int(input("番号を入力してください: "))
+            if 1 <= choice <= len(trays):
+                return trays[choice - 1]
+        except ValueError:
+            pass
+        except EOFError:
+            print("\n入力がありません。終了します。")
+            sys.exit(1)
+        print(f"  1〜{len(trays)} の番号を入力してください。")
 
 
 def select_printer():
@@ -119,12 +156,12 @@ def preview_image(image_path):
 
 def print_borderless(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality):
     if is_wsl():
-        _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray[0], quality[0])
+        _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality[0])
     else:
-        _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray[1], quality[1])
+        _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality[1])
 
 
-def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray_kind, quality_kind):
+def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray_name, quality_kind):
     win_path = subprocess.run(
         ["wslpath", "-w", str(Path(image_path).resolve())],
         capture_output=True, text=True,
@@ -136,6 +173,7 @@ def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray
 
     safe_path    = win_path.replace("'", "''")
     safe_printer = printer_name.replace("'", "''")
+    safe_tray    = tray_name.replace("'", "''")
 
     ps_script = f"""
 Add-Type -AssemblyName System.Drawing
@@ -144,7 +182,7 @@ $pd  = New-Object System.Drawing.Printing.PrintDocument
 $pd.PrinterSettings.PrinterName   = '{safe_printer}'
 $pd.DefaultPageSettings.Margins   = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
 $pd.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize('Custom', {w_hundredths}, {h_hundredths})
-$src = $pd.PrinterSettings.PaperSources | Where-Object {{ $_.Kind -eq [System.Drawing.Printing.PaperSourceKind]::{tray_kind} }} | Select-Object -First 1
+$src = $pd.PrinterSettings.PaperSources | Where-Object {{ $_.SourceName -eq '{safe_tray}' }} | Select-Object -First 1
 if ($src) {{ $pd.DefaultPageSettings.PaperSource = $src }}
 $res = $pd.PrinterSettings.PrinterResolutions | Where-Object {{ $_.Kind -eq [System.Drawing.Printing.PrinterResolutionKind]::{quality_kind} }} | Select-Object -First 1
 if ($res) {{ $pd.DefaultPageSettings.PrinterResolution = $res }}
@@ -264,6 +302,6 @@ if __name__ == "__main__":
 
     printer = select_printer()
     if printer:
-        tray    = select_from_menu("【給紙トレイを選んでください】", TRAY_OPTIONS)
+        tray    = select_tray(printer)
         quality = select_from_menu("【印刷品質を選んでください】", QUALITY_OPTIONS)
         print_borderless(sys.argv[2], printer, paper_w_mm, paper_h_mm, tray, quality)
