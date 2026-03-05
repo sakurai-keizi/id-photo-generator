@@ -75,8 +75,10 @@ def is_wsl():
 def get_printers():
     if is_wsl():
         result = subprocess.run(
-            ["powershell.exe", "-Command", "Get-Printer | Select-Object -ExpandProperty Name"],
-            capture_output=True, text=True,
+            ["powershell.exe", "-Command",
+             "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+             "Get-Printer | Select-Object -ExpandProperty Name"],
+            capture_output=True, text=True, encoding="utf-8",
         )
         return [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
     else:
@@ -126,6 +128,7 @@ def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm):
     safe_printer = printer_name.replace("'", "''")
 
     ps_script = f"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Drawing
 $img = [System.Drawing.Image]::FromFile('{safe_path}')
 $pd  = New-Object System.Drawing.Printing.PrintDocument
@@ -143,7 +146,7 @@ Write-Host '印刷ジョブを送信しました。'
 """
     result = subprocess.run(
         ["powershell.exe", "-Command", ps_script],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8",
     )
     if result.returncode == 0:
         print(result.stdout.strip())
