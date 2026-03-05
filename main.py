@@ -44,11 +44,11 @@ PAPER_SIZES = {
     "A4（210mm × 297mm）": (210.0, 297.0),
 }
 
-# 各値は (Windows PrinterResolutionKind, CUPS print-quality)
-QUALITY_OPTIONS = {
-    "下書き（Draft）":  ("Draft",  "3"),
-    "標準（Normal）":   ("Medium", "4"),
-    "高品質（High）":   ("High",   "5"),
+_RESOLUTION_KIND_LABELS = {
+    "Draft": "下書き (Draft)",
+    "Low":   "低品質 (Low)",
+    "Medium":"標準 (Medium)",
+    "High":  "高品質 (High)",
 }
 
 
@@ -98,6 +98,68 @@ $pd.PrinterSettings.PaperSources | ForEach-Object {{ $_.SourceName }}
                 _, values_str = line.split(":", 1)
                 return [v.lstrip("*") for v in values_str.split()]
         return ["Auto"]
+
+
+def get_qualities(printer_name):
+    """(表示名, 識別子) のリストを返す。識別子はWSL2=インデックス文字列、CUPS=オプション文字列"""
+    if is_wsl():
+        safe_printer = printer_name.replace("'", "''")
+        ps_script = f"""
+Add-Type -AssemblyName System.Drawing
+$pd = New-Object System.Drawing.Printing.PrintDocument
+$pd.PrinterSettings.PrinterName = '{safe_printer}'
+$pd.PrinterSettings.PrinterResolutions | ForEach-Object {{ "$($_.Kind),$($_.X),$($_.Y)" }}
+"""
+        result = subprocess.run(["powershell.exe", "-Command", ps_script], capture_output=True)
+        output = result.stdout.decode("cp932", errors="replace")
+        items = []
+        for i, line in enumerate(output.strip().splitlines()):
+            parts = line.strip().split(",")
+            if len(parts) != 3:
+                continue
+            kind, x, y = parts
+            if kind == "Custom":
+                display = f"{x}×{y} dpi"
+            else:
+                label = _RESOLUTION_KIND_LABELS.get(kind, kind)
+                display = f"{label} ({x}×{y} dpi)" if int(x) > 0 else label
+            items.append((display, str(i)))
+        return items
+    else:
+        result = subprocess.run(
+            ["lpoptions", "-p", printer_name, "-l"], capture_output=True, text=True,
+        )
+        for line in result.stdout.splitlines():
+            if line.startswith("print-quality/"):
+                _, values_str = line.split(":", 1)
+                labels = {"3": "下書き (Draft)", "4": "標準 (Normal)", "5": "高品質 (High)"}
+                return [(labels.get(v.lstrip("*"), v.lstrip("*")), f"print-quality={v.lstrip('*')}")
+                        for v in values_str.split()]
+            if line.startswith("Resolution/"):
+                _, values_str = line.split(":", 1)
+                return [(v.lstrip("*"), f"Resolution={v.lstrip('*')}") for v in values_str.split()]
+        return [("標準 (Normal)", "print-quality=4")]
+
+
+def select_quality(printer_name):
+    qualities = get_qualities(printer_name)
+    if not qualities:
+        print("印刷品質情報を取得できませんでした。")
+        return None
+    print("\n【印刷品質を選んでください】")
+    for i, (name, _) in enumerate(qualities, 1):
+        print(f"  {i}. {name}")
+    while True:
+        try:
+            choice = int(input("番号を入力してください: "))
+            if 1 <= choice <= len(qualities):
+                return qualities[choice - 1][1]  # 識別子を返す
+        except ValueError:
+            pass
+        except EOFError:
+            print("\n入力がありません。終了します。")
+            sys.exit(1)
+        print(f"  1〜{len(qualities)} の番号を入力してください。")
 
 
 def select_tray(printer_name):
@@ -156,12 +218,12 @@ def preview_image(image_path):
 
 def print_borderless(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality):
     if is_wsl():
-        _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality[0])
+        _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality)
     else:
-        _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality[1])
+        _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality)
 
 
-def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray_name, quality_kind):
+def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray_name, quality_idx):
     win_path = subprocess.run(
         ["wslpath", "-w", str(Path(image_path).resolve())],
         capture_output=True, text=True,
@@ -184,7 +246,7 @@ $pd.DefaultPageSettings.Margins   = New-Object System.Drawing.Printing.Margins(0
 $pd.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize('Custom', {w_hundredths}, {h_hundredths})
 $src = $pd.PrinterSettings.PaperSources | Where-Object {{ $_.SourceName -eq '{safe_tray}' }} | Select-Object -First 1
 if ($src) {{ $pd.DefaultPageSettings.PaperSource = $src }}
-$res = $pd.PrinterSettings.PrinterResolutions | Where-Object {{ $_.Kind -eq [System.Drawing.Printing.PrinterResolutionKind]::{quality_kind} }} | Select-Object -First 1
+$res = $pd.PrinterSettings.PrinterResolutions[{quality_idx}]
 if ($res) {{ $pd.DefaultPageSettings.PrinterResolution = $res }}
 $imgRef = $img
 $pd.add_PrintPage({{
@@ -202,12 +264,12 @@ Write-Host '印刷ジョブを送信しました。'
         print(f"印刷エラー: {result.stderr.decode('cp932', errors='replace').strip()}")
 
 
-def _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray_cups, quality_cups):
+def _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray_name, quality_opt):
     media = f"Custom.{paper_w_mm}x{paper_h_mm}mm"
     result = subprocess.run(
         ["lp", "-d", printer_name,
          "-o", f"media={media}", "-o", "fit-to-page",
-         "-o", f"InputSlot={tray_cups}", "-o", f"print-quality={quality_cups}",
+         "-o", f"InputSlot={tray_name}", "-o", quality_opt,
          str(Path(image_path).resolve())],
         capture_output=True, text=True,
     )
@@ -303,5 +365,5 @@ if __name__ == "__main__":
     printer = select_printer()
     if printer:
         tray    = select_tray(printer)
-        quality = select_from_menu("【印刷品質を選んでください】", QUALITY_OPTIONS)
+        quality = select_quality(printer)
         print_borderless(sys.argv[2], printer, paper_w_mm, paper_h_mm, tray, quality)
