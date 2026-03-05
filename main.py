@@ -63,21 +63,6 @@ def mm_to_px(mm):
     return round(mm / 25.4 * DPI)
 
 
-def ask_yes_no(question):
-    print(f"\n{question}")
-    print("  1. はい")
-    print("  2. いいえ")
-    while True:
-        try:
-            ans = input("番号を入力してください: ").strip()
-            if ans == "1":
-                return True
-            if ans == "2":
-                return False
-        except EOFError:
-            return False
-        print("  1 か 2 を入力してください。")
-
 
 def is_wsl():
     try:
@@ -277,9 +262,8 @@ if __name__ == "__main__":
     print("\nプレビューを開いています...")
     preview_image(sys.argv[2])
 
-    if ask_yes_no("【このまま印刷しますか？】"):
-        printer = select_printer()
-        if printer:
-            tray    = select_from_menu("【給紙トレイを選んでください】", TRAY_OPTIONS)
-            quality = select_from_menu("【印刷品質を選んでください】", QUALITY_OPTIONS)
-            print_borderless(sys.argv[2], printer, paper_w_mm, paper_h_mm, tray, quality)
+    printer = select_printer()
+    if printer:
+        tray    = select_from_menu("【給紙トレイを選んでください】", TRAY_OPTIONS)
+        quality = select_from_menu("【印刷品質を選んでください】", QUALITY_OPTIONS)
+        print_borderless(sys.argv[2], printer, paper_w_mm, paper_h_mm, tray, quality)
