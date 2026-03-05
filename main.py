@@ -120,6 +120,18 @@ def select_printer():
         print(f"  1〜{len(printers)} の番号を入力してください。")
 
 
+def preview_image(image_path):
+    abs_path = str(Path(image_path).resolve())
+    if is_wsl():
+        win_path = subprocess.run(
+            ["wslpath", "-w", abs_path], capture_output=True, text=True,
+        ).stdout.strip()
+        safe = win_path.replace("'", "''")
+        subprocess.Popen(["powershell.exe", "-Command", f"Invoke-Item '{safe}'"])
+    else:
+        subprocess.Popen(["xdg-open", abs_path])
+
+
 def print_borderless(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality):
     if is_wsl():
         _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray[0], quality[0])
@@ -262,7 +274,10 @@ if __name__ == "__main__":
 
     generate_id_photo(sys.argv[1], sys.argv[2], id_w_mm, id_h_mm, paper_w_mm, paper_h_mm)
 
-    if ask_yes_no("【フチなし印刷しますか？】"):
+    print("\nプレビューを開いています...")
+    preview_image(sys.argv[2])
+
+    if ask_yes_no("【このまま印刷しますか？】"):
         printer = select_printer()
         if printer:
             tray    = select_from_menu("【給紙トレイを選んでください】", TRAY_OPTIONS)
