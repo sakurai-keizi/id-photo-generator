@@ -65,12 +65,23 @@ def ask_yes_no(question):
         print("  1 か 2 を入力してください。")
 
 
+def is_wsl():
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
 def get_printers():
-    result = subprocess.run(
-        ["powershell.exe", "-Command", "Get-Printer | Select-Object -ExpandProperty Name"],
-        capture_output=True, text=True,
-    )
-    return [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
+    if is_wsl():
+        result = subprocess.run(
+            ["powershell.exe", "-Command", "Get-Printer | Select-Object -ExpandProperty Name"],
+            capture_output=True, text=True,
+        )
+        return [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
+    else:
+        result = subprocess.run(["lpstat", "-a"], capture_output=True, text=True)
+        return [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
 
 
 def select_printer():
@@ -95,6 +106,13 @@ def select_printer():
 
 
 def print_borderless(image_path, printer_name, paper_w_mm, paper_h_mm):
+    if is_wsl():
+        _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm)
+    else:
+        _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm)
+
+
+def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm):
     win_path = subprocess.run(
         ["wslpath", "-w", str(Path(image_path).resolve())],
         capture_output=True, text=True,
@@ -129,6 +147,19 @@ Write-Host '印刷ジョブを送信しました。'
     )
     if result.returncode == 0:
         print(result.stdout.strip())
+    else:
+        print(f"印刷エラー: {result.stderr.strip()}")
+
+
+def _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm):
+    media = f"Custom.{paper_w_mm}x{paper_h_mm}mm"
+    result = subprocess.run(
+        ["lp", "-d", printer_name, "-o", f"media={media}", "-o", "fit-to-page",
+         str(Path(image_path).resolve())],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        print(f"印刷ジョブを送信しました。{result.stdout.strip()}")
     else:
         print(f"印刷エラー: {result.stderr.strip()}")
 
