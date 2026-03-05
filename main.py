@@ -4,7 +4,18 @@
 #   "ultralytics>=8.0.0",
 #   "Pillow>=10.0.0",
 #   "numpy>=1.24.0",
+#   "torch>=2.0.0",
+#   "torchvision>=0.15.0",
 # ]
+#
+# [[tool.uv.index]]
+# name = "pytorch-cpu"
+# url = "https://download.pytorch.org/whl/cpu"
+# explicit = true
+#
+# [tool.uv.sources]
+# torch = [{ index = "pytorch-cpu" }]
+# torchvision = [{ index = "pytorch-cpu" }]
 # ///
 
 # 使い方: uv run main.py <入力画像> <出力PNG>
@@ -47,12 +58,16 @@ def select_from_menu(title, options):
             choice = int(input("番号を入力してください: "))
             if 1 <= choice <= len(names):
                 return options[names[choice - 1]]
-        except (ValueError, EOFError):
+        except ValueError:
             pass
+        except EOFError:
+            print("\n入力がありません。終了します。")
+            sys.exit(1)
         print(f"  1〜{len(names)} の番号を入力してください。")
 
 
 def generate_id_photo(input_path, output_path, id_w_mm, id_h_mm, paper_w_mm, paper_h_mm):
+    Image.MAX_IMAGE_PIXELS = None  # 高解像度カメラ画像の制限を解除
     img = Image.open(input_path).convert("RGB")
     W, H = img.size
 
