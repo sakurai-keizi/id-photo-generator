@@ -44,6 +44,20 @@ PAPER_SIZES = {
     "A4（210mm × 297mm）": (210.0, 297.0),
 }
 
+# 各値は (Windows PaperSourceKind, CUPS InputSlot)
+TRAY_OPTIONS = {
+    "前トレイ": ("Upper",      "Front"),
+    "後トレイ": ("Lower",      "Rear"),
+    "自動":     ("AutoSelect", "Auto"),
+}
+
+# 各値は (Windows PrinterResolutionKind, CUPS print-quality)
+QUALITY_OPTIONS = {
+    "下書き（Draft）":  ("Draft",  "3"),
+    "標準（Normal）":   ("Medium", "4"),
+    "高品質（High）":   ("High",   "5"),
+}
+
 
 def mm_to_px(mm):
     return round(mm / 25.4 * DPI)
@@ -106,14 +120,14 @@ def select_printer():
         print(f"  1〜{len(printers)} の番号を入力してください。")
 
 
-def print_borderless(image_path, printer_name, paper_w_mm, paper_h_mm):
+def print_borderless(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality):
     if is_wsl():
-        _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm)
+        _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray[0], quality[0])
     else:
-        _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm)
+        _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray[1], quality[1])
 
 
-def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm):
+def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray_kind, quality_kind):
     win_path = subprocess.run(
         ["wslpath", "-w", str(Path(image_path).resolve())],
         capture_output=True, text=True,
@@ -130,9 +144,13 @@ def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm):
 Add-Type -AssemblyName System.Drawing
 $img = [System.Drawing.Image]::FromFile('{safe_path}')
 $pd  = New-Object System.Drawing.Printing.PrintDocument
-$pd.PrinterSettings.PrinterName       = '{safe_printer}'
-$pd.DefaultPageSettings.Margins       = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
-$pd.DefaultPageSettings.PaperSize     = New-Object System.Drawing.Printing.PaperSize('Custom', {w_hundredths}, {h_hundredths})
+$pd.PrinterSettings.PrinterName   = '{safe_printer}'
+$pd.DefaultPageSettings.Margins   = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
+$pd.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize('Custom', {w_hundredths}, {h_hundredths})
+$src = $pd.PrinterSettings.PaperSources | Where-Object {{ $_.Kind -eq [System.Drawing.Printing.PaperSourceKind]::{tray_kind} }} | Select-Object -First 1
+if ($src) {{ $pd.DefaultPageSettings.PaperSource = $src }}
+$res = $pd.PrinterSettings.PrinterResolutions | Where-Object {{ $_.Kind -eq [System.Drawing.Printing.PrinterResolutionKind]::{quality_kind} }} | Select-Object -First 1
+if ($res) {{ $pd.DefaultPageSettings.PrinterResolution = $res }}
 $imgRef = $img
 $pd.add_PrintPage({{
     param($sender, $e)
@@ -149,10 +167,12 @@ Write-Host '印刷ジョブを送信しました。'
         print(f"印刷エラー: {result.stderr.decode('cp932', errors='replace').strip()}")
 
 
-def _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm):
+def _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray_cups, quality_cups):
     media = f"Custom.{paper_w_mm}x{paper_h_mm}mm"
     result = subprocess.run(
-        ["lp", "-d", printer_name, "-o", f"media={media}", "-o", "fit-to-page",
+        ["lp", "-d", printer_name,
+         "-o", f"media={media}", "-o", "fit-to-page",
+         "-o", f"InputSlot={tray_cups}", "-o", f"print-quality={quality_cups}",
          str(Path(image_path).resolve())],
         capture_output=True, text=True,
     )
@@ -245,4 +265,6 @@ if __name__ == "__main__":
     if ask_yes_no("【フチなし印刷しますか？】"):
         printer = select_printer()
         if printer:
-            print_borderless(sys.argv[2], printer, paper_w_mm, paper_h_mm)
+            tray    = select_from_menu("【給紙トレイを選んでください】", TRAY_OPTIONS)
+            quality = select_from_menu("【印刷品質を選んでください】", QUALITY_OPTIONS)
+            print_borderless(sys.argv[2], printer, paper_w_mm, paper_h_mm, tray, quality)
