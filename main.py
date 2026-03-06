@@ -245,7 +245,11 @@ def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray
     h_hundredths = round(paper_h_mm / 25.4 * 100)
     safe_path    = _to_win_path(image_path).replace("'", "''")
     safe_printer = printer_name.replace("'", "''")
-    safe_tray    = tray_name.replace("'", "''")
+    tray_script  = (
+        f"$src = $pd.PrinterSettings.PaperSources | Where-Object {{ $_.SourceName -eq '{tray_name.replace(chr(39), chr(39)*2)}' }} | Select-Object -First 1\n"
+        f"if ($src) {{ $pd.DefaultPageSettings.PaperSource = $src }}"
+        if tray_name else ""
+    )
 
     ps_script = f"""
 Add-Type -AssemblyName System.Drawing
@@ -258,8 +262,7 @@ $th = {h_hundredths}
 $match = $pd.PrinterSettings.PaperSizes | Where-Object {{ [Math]::Abs($_.Width - $tw) -le 10 -and [Math]::Abs($_.Height - $th) -le 10 }} | Select-Object -First 1
 if ($match) {{ $pd.DefaultPageSettings.PaperSize = $match; Write-Host "用紙サイズ: $($match.PaperName)" }}
 else {{ $pd.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize('Custom', $tw, $th); Write-Host "用紙サイズ: カスタム ($($tw/100*25.4)mm x $($th/100*25.4)mm)" }}
-$src = $pd.PrinterSettings.PaperSources | Where-Object {{ $_.SourceName -eq '{safe_tray}' }} | Select-Object -First 1
-if ($src) {{ $pd.DefaultPageSettings.PaperSource = $src }}
+{tray_script}
 $res = $pd.PrinterSettings.PrinterResolutions[{quality_idx}]
 if ($res) {{ $pd.DefaultPageSettings.PrinterResolution = $res }}
 $imgRef = $img
@@ -281,13 +284,13 @@ Write-Host '印刷ジョブを送信しました。'
 
 
 def _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray_name, quality_opt):
-    result = subprocess.run(
-        ["lp", "-d", printer_name,
-         "-o", f"media=Custom.{paper_w_mm}x{paper_h_mm}mm", "-o", "fit-to-page",
-         "-o", f"InputSlot={tray_name}", "-o", quality_opt,
-         str(Path(image_path).resolve())],
-        capture_output=True, text=True,
-    )
+    cmd = ["lp", "-d", printer_name,
+           "-o", f"media=Custom.{paper_w_mm}x{paper_h_mm}mm", "-o", "fit-to-page",
+           "-o", quality_opt]
+    if tray_name:
+        cmd += ["-o", f"InputSlot={tray_name}"]
+    cmd.append(str(Path(image_path).resolve()))
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
         print(f"印刷ジョブを送信しました。{result.stdout.strip()}")
     else:
