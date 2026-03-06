@@ -32,86 +32,117 @@ DPI = 300
 ZOOM = 1.1  # 拡大係数 (1.0 = 等倍)
 
 ID_PHOTO_SIZES = {
-    "標準（縦3.0cm × 横2.4cm）": (24.0, 30.0),
+    "標準（縦3.0cm × 横2.4cm）":              (24.0, 30.0),
     "パスポート・マイナンバー（縦4.5cm × 横3.5cm）": (35.0, 45.0),
-    "履歴書用・大（縦5.5cm × 横4.0cm）": (40.0, 55.0),
+    "履歴書用・大（縦5.5cm × 横4.0cm）":        (40.0, 55.0),
 }
 
 PAPER_SIZES = {
-    "L版（89mm × 127mm）": (89.0, 127.0),
-    "2L版（127mm × 178mm）": (127.0, 178.0),
+    "L版（89mm × 127mm）":    (89.0,  127.0),
+    "2L版（127mm × 178mm）":  (127.0, 178.0),
     "ハガキ（100mm × 148mm）": (100.0, 148.0),
-    "A4（210mm × 297mm）": (210.0, 297.0),
+    "A4（210mm × 297mm）":    (210.0, 297.0),
 }
 
 _RESOLUTION_KIND_LABELS = {
-    "Draft": "下書き (Draft)",
-    "Low":   "低品質 (Low)",
-    "Medium":"標準 (Medium)",
-    "High":  "高品質 (High)",
+    "Draft":  "下書き (Draft)",
+    "Low":    "低品質 (Low)",
+    "Medium": "標準 (Medium)",
+    "High":   "高品質 (High)",
 }
 
 
-def mm_to_px(mm):
-    return round(mm / 25.4 * DPI)
-
-
-
-def is_wsl():
+def _detect_wsl():
     try:
         return "microsoft" in Path("/proc/version").read_text().lower()
     except OSError:
         return False
 
 
+IS_WSL = _detect_wsl()
+
+
+def mm_to_px(mm):
+    return round(mm / 25.4 * DPI)
+
+
+def _run_ps(script):
+    """PowerShellスクリプトを実行し、stdout を CP932 でデコードして返す。"""
+    result = subprocess.run(["powershell.exe", "-Command", script], capture_output=True)
+    return result.stdout.decode("cp932", errors="replace")
+
+
+def _to_win_path(path):
+    """WSL パスを Windows パスに変換する。"""
+    return subprocess.run(
+        ["wslpath", "-w", str(Path(path).resolve())],
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _choose(title, items, display=str, empty_msg="項目が見つかりませんでした。"):
+    """リストからインタラクティブに 1 つ選ばせる。空なら None を返す。"""
+    if not items:
+        print(empty_msg)
+        return None
+    print(f"\n{title}")
+    for i, item in enumerate(items, 1):
+        print(f"  {i}. {display(item)}")
+    while True:
+        try:
+            choice = int(input("番号を入力してください: "))
+            if 1 <= choice <= len(items):
+                return items[choice - 1]
+        except ValueError:
+            pass
+        except EOFError:
+            print("\n入力がありません。終了します。")
+            sys.exit(1)
+        print(f"  1〜{len(items)} の番号を入力してください。")
+
+
+def select_from_menu(title, options):
+    """辞書のキーを選ばせて対応する値を返す。"""
+    chosen = _choose(title, list(options.items()), display=lambda x: x[0])
+    return chosen[1] if chosen else None
+
+
 def get_printers():
-    if is_wsl():
-        result = subprocess.run(
-            ["powershell.exe", "-Command", "Get-Printer | Select-Object -ExpandProperty Name"],
-            capture_output=True,
-        )
-        output = result.stdout.decode("cp932", errors="replace")
+    if IS_WSL:
+        output = _run_ps("Get-Printer | Select-Object -ExpandProperty Name")
         return [line.strip() for line in output.strip().splitlines() if line.strip()]
-    else:
-        result = subprocess.run(["lpstat", "-a"], capture_output=True, text=True)
-        return [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
+    result = subprocess.run(["lpstat", "-a"], capture_output=True, text=True)
+    return [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
 
 
 def get_trays(printer_name):
-    if is_wsl():
-        safe_printer = printer_name.replace("'", "''")
-        ps_script = f"""
+    if IS_WSL:
+        safe = printer_name.replace("'", "''")
+        output = _run_ps(f"""
 Add-Type -AssemblyName System.Drawing
 $pd = New-Object System.Drawing.Printing.PrintDocument
-$pd.PrinterSettings.PrinterName = '{safe_printer}'
+$pd.PrinterSettings.PrinterName = '{safe}'
 $pd.PrinterSettings.PaperSources | ForEach-Object {{ $_.SourceName }}
-"""
-        result = subprocess.run(["powershell.exe", "-Command", ps_script], capture_output=True)
-        output = result.stdout.decode("cp932", errors="replace")
+""")
         return [line.strip() for line in output.strip().splitlines() if line.strip()]
-    else:
-        result = subprocess.run(
-            ["lpoptions", "-p", printer_name, "-l"], capture_output=True, text=True,
-        )
-        for line in result.stdout.splitlines():
-            if line.startswith("InputSlot/"):
-                _, values_str = line.split(":", 1)
-                return [v.lstrip("*") for v in values_str.split()]
-        return ["Auto"]
+    result = subprocess.run(["lpoptions", "-p", printer_name, "-l"], capture_output=True, text=True)
+    for line in result.stdout.splitlines():
+        if line.startswith("InputSlot/"):
+            _, values_str = line.split(":", 1)
+            return [v.lstrip("*") for v in values_str.split()]
+    return ["Auto"]
 
 
 def get_qualities(printer_name):
-    """(表示名, 識別子) のリストを返す。識別子はWSL2=インデックス文字列、CUPS=オプション文字列"""
-    if is_wsl():
-        safe_printer = printer_name.replace("'", "''")
-        ps_script = f"""
+    """(表示名, 識別子) のリストを返す。識別子は WSL2=インデックス文字列、CUPS=オプション文字列。"""
+    if IS_WSL:
+        safe = printer_name.replace("'", "''")
+        output = _run_ps(f"""
 Add-Type -AssemblyName System.Drawing
 $pd = New-Object System.Drawing.Printing.PrintDocument
-$pd.PrinterSettings.PrinterName = '{safe_printer}'
+$pd.PrinterSettings.PrinterName = '{safe}'
 $pd.PrinterSettings.PrinterResolutions | ForEach-Object {{ "$($_.Kind),$($_.X),$($_.Y)" }}
-"""
-        result = subprocess.run(["powershell.exe", "-Command", ps_script], capture_output=True)
-        output = result.stdout.decode("cp932", errors="replace")
+""")
         items = []
         for i, line in enumerate(output.strip().splitlines()):
             parts = line.strip().split(",")
@@ -125,115 +156,54 @@ $pd.PrinterSettings.PrinterResolutions | ForEach-Object {{ "$($_.Kind),$($_.X),$
                 display = f"{label} ({x}×{y} dpi)" if int(x) > 0 else label
             items.append((display, str(i)))
         return items
-    else:
-        result = subprocess.run(
-            ["lpoptions", "-p", printer_name, "-l"], capture_output=True, text=True,
-        )
-        for line in result.stdout.splitlines():
-            if line.startswith("print-quality/"):
-                _, values_str = line.split(":", 1)
-                labels = {"3": "下書き (Draft)", "4": "標準 (Normal)", "5": "高品質 (High)"}
-                return [(labels.get(v.lstrip("*"), v.lstrip("*")), f"print-quality={v.lstrip('*')}")
-                        for v in values_str.split()]
-            if line.startswith("Resolution/"):
-                _, values_str = line.split(":", 1)
-                return [(v.lstrip("*"), f"Resolution={v.lstrip('*')}") for v in values_str.split()]
-        return [("標準 (Normal)", "print-quality=4")]
-
-
-def select_quality(printer_name):
-    qualities = get_qualities(printer_name)
-    if not qualities:
-        print("印刷品質情報を取得できませんでした。")
-        return None
-    print("\n【印刷品質を選んでください】")
-    for i, (name, _) in enumerate(qualities, 1):
-        print(f"  {i}. {name}")
-    while True:
-        try:
-            choice = int(input("番号を入力してください: "))
-            if 1 <= choice <= len(qualities):
-                return qualities[choice - 1][1]  # 識別子を返す
-        except ValueError:
-            pass
-        except EOFError:
-            print("\n入力がありません。終了します。")
-            sys.exit(1)
-        print(f"  1〜{len(qualities)} の番号を入力してください。")
-
-
-def select_tray(printer_name):
-    trays = get_trays(printer_name)
-    if not trays:
-        print("トレイ情報を取得できませんでした。")
-        return None
-    print("\n【給紙トレイを選んでください】")
-    for i, name in enumerate(trays, 1):
-        print(f"  {i}. {name}")
-    while True:
-        try:
-            choice = int(input("番号を入力してください: "))
-            if 1 <= choice <= len(trays):
-                return trays[choice - 1]
-        except ValueError:
-            pass
-        except EOFError:
-            print("\n入力がありません。終了します。")
-            sys.exit(1)
-        print(f"  1〜{len(trays)} の番号を入力してください。")
+    result = subprocess.run(["lpoptions", "-p", printer_name, "-l"], capture_output=True, text=True)
+    for line in result.stdout.splitlines():
+        if line.startswith("print-quality/"):
+            _, values_str = line.split(":", 1)
+            labels = {"3": "下書き (Draft)", "4": "標準 (Normal)", "5": "高品質 (High)"}
+            return [(labels.get(v.lstrip("*"), v.lstrip("*")), f"print-quality={v.lstrip('*')}")
+                    for v in values_str.split()]
+        if line.startswith("Resolution/"):
+            _, values_str = line.split(":", 1)
+            return [(v.lstrip("*"), f"Resolution={v.lstrip('*')}") for v in values_str.split()]
+    return [("標準 (Normal)", "print-quality=4")]
 
 
 def select_printer():
-    printers = get_printers()
-    if not printers:
-        print("プリンターが見つかりませんでした。")
-        return None
-    print("\n【プリンターを選んでください】")
-    for i, name in enumerate(printers, 1):
-        print(f"  {i}. {name}")
-    while True:
-        try:
-            choice = int(input("番号を入力してください: "))
-            if 1 <= choice <= len(printers):
-                return printers[choice - 1]
-        except ValueError:
-            pass
-        except EOFError:
-            print("\n入力がありません。終了します。")
-            sys.exit(1)
-        print(f"  1〜{len(printers)} の番号を入力してください。")
+    return _choose("【プリンターを選んでください】", get_printers(),
+                   empty_msg="プリンターが見つかりませんでした。")
+
+
+def select_tray(printer_name):
+    return _choose("【給紙トレイを選んでください】", get_trays(printer_name),
+                   empty_msg="トレイ情報を取得できませんでした。")
+
+
+def select_quality(printer_name):
+    chosen = _choose("【印刷品質を選んでください】", get_qualities(printer_name),
+                     display=lambda x: x[0], empty_msg="印刷品質情報を取得できませんでした。")
+    return chosen[1] if chosen else None
 
 
 def preview_image(image_path):
-    abs_path = str(Path(image_path).resolve())
-    if is_wsl():
-        win_path = subprocess.run(
-            ["wslpath", "-w", abs_path], capture_output=True, text=True,
-        ).stdout.strip()
-        safe = win_path.replace("'", "''")
+    if IS_WSL:
+        safe = _to_win_path(image_path).replace("'", "''")
         subprocess.Popen(["powershell.exe", "-Command", f"Invoke-Item '{safe}'"])
     else:
-        subprocess.Popen(["xdg-open", abs_path])
+        subprocess.Popen(["xdg-open", str(Path(image_path).resolve())])
 
 
 def print_borderless(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality):
-    if is_wsl():
+    if IS_WSL:
         _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality)
     else:
         _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality)
 
 
 def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray_name, quality_idx):
-    win_path = subprocess.run(
-        ["wslpath", "-w", str(Path(image_path).resolve())],
-        capture_output=True, text=True,
-    ).stdout.strip()
-
-    # 用紙サイズ: mm → 1/100インチ単位（System.Drawing.Printing の単位）
     w_hundredths = round(paper_w_mm / 25.4 * 100)
     h_hundredths = round(paper_h_mm / 25.4 * 100)
-
-    safe_path    = win_path.replace("'", "''")
+    safe_path    = _to_win_path(image_path).replace("'", "''")
     safe_printer = printer_name.replace("'", "''")
     safe_tray    = tray_name.replace("'", "''")
 
@@ -241,7 +211,7 @@ def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray
 Add-Type -AssemblyName System.Drawing
 $img = [System.Drawing.Image]::FromFile('{safe_path}')
 $pd  = New-Object System.Drawing.Printing.PrintDocument
-$pd.PrinterSettings.PrinterName   = '{safe_printer}'
+$pd.PrinterSettings.PrinterName = '{safe_printer}'
 $pd.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
 $tw = {w_hundredths}
 $th = {h_hundredths}
@@ -269,10 +239,9 @@ Write-Host '印刷ジョブを送信しました。'
 
 
 def _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray_name, quality_opt):
-    media = f"Custom.{paper_w_mm}x{paper_h_mm}mm"
     result = subprocess.run(
         ["lp", "-d", printer_name,
-         "-o", f"media={media}", "-o", "fit-to-page",
+         "-o", f"media=Custom.{paper_w_mm}x{paper_h_mm}mm", "-o", "fit-to-page",
          "-o", f"InputSlot={tray_name}", "-o", quality_opt,
          str(Path(image_path).resolve())],
         capture_output=True, text=True,
@@ -281,24 +250,6 @@ def _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tra
         print(f"印刷ジョブを送信しました。{result.stdout.strip()}")
     else:
         print(f"印刷エラー: {result.stderr.strip()}")
-
-
-def select_from_menu(title, options):
-    print(f"\n{title}")
-    names = list(options.keys())
-    for i, name in enumerate(names, 1):
-        print(f"  {i}. {name}")
-    while True:
-        try:
-            choice = int(input("番号を入力してください: "))
-            if 1 <= choice <= len(names):
-                return options[names[choice - 1]]
-        except ValueError:
-            pass
-        except EOFError:
-            print("\n入力がありません。終了します。")
-            sys.exit(1)
-        print(f"  1〜{len(names)} の番号を入力してください。")
 
 
 def generate_id_photo(input_path, output_path, id_w_mm, id_h_mm, paper_w_mm, paper_h_mm):
@@ -332,9 +283,9 @@ def generate_id_photo(input_path, output_path, id_w_mm, id_h_mm, paper_w_mm, pap
     right  = min(W, shoulder_cx + crop_w / 2)
 
     # ズーム: 中心固定でクロップ範囲を縮小 → 拡大表示
-    cx, cy  = (left + right) / 2, (top + bottom) / 2
-    half_w  = (right - left) / 2 / ZOOM
-    half_h  = (bottom - top) / 2 / ZOOM
+    cx, cy = (left + right) / 2, (top + bottom) / 2
+    half_w = (right - left) / 2 / ZOOM
+    half_h = (bottom - top) / 2 / ZOOM
     left, right = max(0, cx - half_w), min(W, cx + half_w)
     top, bottom = max(0, cy - half_h), min(H, cy + half_h)
 
