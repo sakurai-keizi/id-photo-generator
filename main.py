@@ -20,6 +20,7 @@
 
 # 使い方: uv run main.py <入力画像> <出力PNG>
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -61,17 +62,21 @@ def _detect_wsl():
 
 IS_WSL = _detect_wsl()
 
+# pwsh (PowerShell 7+) を優先し、なければ powershell.exe にフォールバック
+# pwsh はデフォルト UTF-8、powershell.exe は CP932（日本語 Windows）
+_PS_EXE, _PS_ENCODING = ("pwsh", "utf-8") if shutil.which("pwsh") else ("powershell.exe", "cp932")
+
 
 def mm_to_px(mm):
     return round(mm / 25.4 * DPI)
 
 
 def _run_ps(script):
-    """PowerShellスクリプトを実行し、stdout を CP932 でデコードして返す。"""
+    """PowerShellスクリプトを実行し、stdout をデコードして返す。"""
     result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-Command", script], capture_output=True,
+        [_PS_EXE, "-NoProfile", "-Command", script], capture_output=True,
     )
-    return result.stdout.decode("cp932", errors="replace")
+    return result.stdout.decode(_PS_ENCODING, errors="replace")
 
 
 def _to_win_path(path):
@@ -223,7 +228,7 @@ def select_quality(printer_name):
 def preview_image(image_path):
     if IS_WSL:
         safe = _to_win_path(image_path).replace("'", "''")
-        subprocess.Popen(["powershell.exe", "-NoProfile", "-Command", f"Invoke-Item '{safe}'"])
+        subprocess.Popen([_PS_EXE, "-NoProfile", "-Command", f"Invoke-Item '{safe}'"])
     else:
         subprocess.Popen(["xdg-open", str(Path(image_path).resolve())])
 
@@ -267,12 +272,12 @@ $img.Dispose()
 Write-Host '印刷ジョブを送信しました。'
 """
     result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-Command", ps_script], capture_output=True,
+        [_PS_EXE, "-NoProfile", "-Command", ps_script], capture_output=True,
     )
     if result.returncode == 0:
-        print(result.stdout.decode("cp932", errors="replace").strip())
+        print(result.stdout.decode(_PS_ENCODING, errors="replace").strip())
     else:
-        print(f"印刷エラー: {result.stderr.decode('cp932', errors='replace').strip()}")
+        print(f"印刷エラー: {result.stderr.decode(_PS_ENCODING, errors='replace').strip()}")
 
 
 def _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray_name, quality_opt):
