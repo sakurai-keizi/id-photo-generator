@@ -68,7 +68,9 @@ def mm_to_px(mm):
 
 def _run_ps(script):
     """PowerShellスクリプトを実行し、stdout を CP932 でデコードして返す。"""
-    result = subprocess.run(["powershell.exe", "-Command", script], capture_output=True)
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", script], capture_output=True,
+    )
     return result.stdout.decode("cp932", errors="replace")
 
 
@@ -221,7 +223,7 @@ def select_quality(printer_name):
 def preview_image(image_path):
     if IS_WSL:
         safe = _to_win_path(image_path).replace("'", "''")
-        subprocess.Popen(["powershell.exe", "-Command", f"Invoke-Item '{safe}'"])
+        subprocess.Popen(["powershell.exe", "-NoProfile", "-Command", f"Invoke-Item '{safe}'"])
     else:
         subprocess.Popen(["xdg-open", str(Path(image_path).resolve())])
 
@@ -264,7 +266,9 @@ $pd.Print()
 $img.Dispose()
 Write-Host '印刷ジョブを送信しました。'
 """
-    result = subprocess.run(["powershell.exe", "-Command", ps_script], capture_output=True)
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", ps_script], capture_output=True,
+    )
     if result.returncode == 0:
         print(result.stdout.decode("cp932", errors="replace").strip())
     else:
