@@ -38,12 +38,29 @@ ID_PHOTO_SIZES = {
     "履歴書用・大（縦55mm × 横40mm (5.5cm×4.0cm)）":        (40.0, 55.0),
 }
 
-PAPER_SIZES = {
-    "L版（89mm × 127mm）":    (89.0,  127.0),
-    "2L版（127mm × 178mm）":  (127.0, 178.0),
-    "ハガキ（100mm × 148mm）": (100.0, 148.0),
-    "A4（210mm × 297mm）":    (210.0, 297.0),
+# CUPS 用: 用紙名 → (横mm, 縦mm) の対応表（フォールバック用）
+_CUPS_PAPER_SIZE_MM = {
+    "A3":       (297.0, 420.0),
+    "A4":       (210.0, 297.0),
+    "A5":       (148.0, 210.0),
+    "A6":       (105.0, 148.0),
+    "B4":       (257.0, 364.0),
+    "B5":       (182.0, 257.0),
+    "Letter":   (215.9, 279.4),
+    "Legal":    (215.9, 355.6),
+    "Postcard": (100.0, 148.0),
+    "L":        (89.0,  127.0),
+    "2L":       (127.0, 178.0),
+    "KG":       (102.0, 152.0),
 }
+
+# CUPS でサイズが取得できなかった場合のフォールバック
+_FALLBACK_PAPER_SIZES = [
+    ("L版（89mm × 127mm）",    (89.0,  127.0)),
+    ("2L版（127mm × 178mm）",  (127.0, 178.0)),
+    ("ハガキ（100mm × 148mm）", (100.0, 148.0)),
+    ("A4（210mm × 297mm）",    (210.0, 297.0)),
+]
 
 _RESOLUTION_KIND_LABELS = {
     "Draft":  "下書き (Draft)",
@@ -145,6 +162,54 @@ def select_id_photo_size(paper_w_mm, paper_h_mm):
         if w <= paper_w_mm and h <= paper_h_mm:
             return w, h
         print(f"  用紙サイズ（横{paper_w_mm}mm × 縦{paper_h_mm}mm）を超えています。再入力してください。")
+
+
+def get_paper_sizes(printer_name):
+    """プリンターがサポートする用紙サイズを (表示名, (w_mm, h_mm)) のリストで返す。"""
+    if IS_WSL:
+        safe = printer_name.replace("'", "''")
+        output = _run_ps(f"""
+Add-Type -AssemblyName System.Drawing
+$pd = New-Object System.Drawing.Printing.PrintDocument
+$pd.PrinterSettings.PrinterName = '{safe}'
+$pd.PrinterSettings.PaperSizes | ForEach-Object {{ "$($_.PaperName),$($_.Width),$($_.Height)" }}
+""")
+        items = []
+        for line in output.strip().splitlines():
+            parts = line.strip().split(",")
+            if len(parts) != 3:
+                continue
+            name, w_str, h_str = parts
+            try:
+                w_mm = round(int(w_str) / 100 * 25.4, 1)
+                h_mm = round(int(h_str) / 100 * 25.4, 1)
+                if w_mm > 0 and h_mm > 0:
+                    items.append((f"{name} ({w_mm}mm × {h_mm}mm)", (w_mm, h_mm)))
+            except ValueError:
+                continue
+        return items or _FALLBACK_PAPER_SIZES
+    else:
+        result = subprocess.run(
+            ["lpoptions", "-p", printer_name, "-l"], capture_output=True, text=True,
+        )
+        for line in result.stdout.splitlines():
+            if line.startswith("PageSize/"):
+                _, values_str = line.split(":", 1)
+                items = []
+                for v in values_str.split():
+                    name = v.lstrip("*")
+                    dims = _CUPS_PAPER_SIZE_MM.get(name)
+                    if dims:
+                        items.append((f"{name} ({dims[0]}mm × {dims[1]}mm)", dims))
+                if items:
+                    return items
+        return _FALLBACK_PAPER_SIZES
+
+
+def select_paper_size(printer_name):
+    chosen = _choose("【印刷用紙のサイズを選んでください】", get_paper_sizes(printer_name),
+                     display=lambda x: x[0])
+    return chosen[1] if chosen else _FALLBACK_PAPER_SIZES[0][1]
 
 
 def get_printers():
@@ -354,7 +419,11 @@ if __name__ == "__main__":
         print(f"エラー: {sys.argv[1]} が見つかりません")
         sys.exit(1)
 
-    paper_w_mm, paper_h_mm = select_from_menu("【印刷用紙のサイズを選んでください】", PAPER_SIZES)
+    printer = select_printer()
+    if not printer:
+        sys.exit(0)
+
+    paper_w_mm, paper_h_mm = select_paper_size(printer)
     id_w_mm, id_h_mm       = select_id_photo_size(paper_w_mm, paper_h_mm)
 
     generate_id_photo(sys.argv[1], sys.argv[2], id_w_mm, id_h_mm, paper_w_mm, paper_h_mm)
@@ -362,11 +431,9 @@ if __name__ == "__main__":
     print("\nプレビューを開いています...")
     preview_image(sys.argv[2])
 
-    printer = select_printer()
-    if printer:
-        tray    = select_tray(printer)
-        quality = select_quality(printer)
-        ok = _choose("【印刷してもよいですか？（用紙・電源を確認してください）】",
-                     ["はい、印刷する", "いいえ、中止する"])
-        if ok == "はい、印刷する":
-            print_borderless(sys.argv[2], printer, paper_w_mm, paper_h_mm, tray, quality)
+    tray    = select_tray(printer)
+    quality = select_quality(printer)
+    ok = _choose("【印刷してもよいですか？（用紙・電源を確認してください）】",
+                 ["はい、印刷する", "いいえ、中止する"])
+    if ok == "はい、印刷する":
+        print_borderless(sys.argv[2], printer, paper_w_mm, paper_h_mm, tray, quality)
