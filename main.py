@@ -31,6 +31,12 @@ from ultralytics import YOLO
 
 DPI = 300
 ZOOM = 1.1  # 拡大係数 (1.0 = 等倍)
+YOLO_MODEL = "yolov8n-pose.pt"
+KEYPOINT_CONFIDENCE_THRESHOLD = 0.3
+SHOULDER_KEYPOINT_INDICES = (5, 6)
+HEAD_TOP_MARGIN = 0.05
+SHOULDER_BOTTOM_MARGIN = 0.02
+PAPER_SIZE_TOLERANCE_HUNDREDTHS = 10
 
 ID_PHOTO_SIZES = {
     "標準（縦30mm × 横24mm (3.0cm×2.4cm)）":              (24.0, 30.0),
@@ -70,7 +76,7 @@ _RESOLUTION_KIND_LABELS = {
 }
 
 
-def _detect_wsl():
+def _detect_wsl() -> bool:
     try:
         return "microsoft" in Path("/proc/version").read_text().lower()
     except OSError:
@@ -84,11 +90,11 @@ IS_WSL = _detect_wsl()
 _PS_EXE, _PS_ENCODING = ("pwsh", "utf-8") if shutil.which("pwsh") else ("powershell.exe", "cp932")
 
 
-def mm_to_px(mm):
+def mm_to_px(mm: float) -> int:
     return round(mm / 25.4 * DPI)
 
 
-def _run_ps(script):
+def _run_ps(script: str) -> str:
     """PowerShellスクリプトを実行し、stdout をデコードして返す。"""
     result = subprocess.run(
         [_PS_EXE, "-NoProfile", "-Command", script], capture_output=True,
@@ -96,7 +102,7 @@ def _run_ps(script):
     return result.stdout.decode(_PS_ENCODING, errors="replace")
 
 
-def _to_win_path(path):
+def _to_win_path(path: str | Path) -> str:
     """WSL パスを Windows パスに変換する。"""
     return subprocess.run(
         ["wslpath", "-w", str(Path(path).resolve())],
@@ -104,7 +110,7 @@ def _to_win_path(path):
     ).stdout.strip()
 
 
-def _choose(title, items, display=str, empty_msg="項目が見つかりませんでした。"):
+def _choose(title: str, items: list, display=str, empty_msg: str = "項目が見つかりませんでした。"):
     """リストからインタラクティブに 1 つ選ばせる。空なら None を返す。"""
     if not items:
         print(empty_msg)
@@ -125,13 +131,13 @@ def _choose(title, items, display=str, empty_msg="項目が見つかりません
         print(f"  1〜{len(items)} の番号を入力してください。")
 
 
-def select_from_menu(title, options):
+def select_from_menu(title: str, options: dict):
     """辞書のキーを選ばせて対応する値を返す。"""
     chosen = _choose(title, list(options.items()), display=lambda x: x[0])
     return chosen[1] if chosen else None
 
 
-def _input_mm(label):
+def _input_mm(label: str) -> float:
     """正の数値（mm）を入力させる。"""
     while True:
         try:
@@ -146,7 +152,7 @@ def _input_mm(label):
         print("  正の数を入力してください。")
 
 
-def select_id_photo_size(paper_w_mm, paper_h_mm):
+def select_id_photo_size(paper_w_mm: float, paper_h_mm: float) -> tuple[float, float] | None:
     """証明写真サイズを選ぶ。カスタムを選んだ場合は用紙サイズ内に収まる寸法を手入力させる。"""
     options = list(ID_PHOTO_SIZES.items()) + [("カスタム入力", None)]
     chosen = _choose("【証明写真のサイズを選んでください】", options, display=lambda x: x[0])
@@ -164,7 +170,18 @@ def select_id_photo_size(paper_w_mm, paper_h_mm):
         print(f"  用紙サイズ（横{paper_w_mm}mm × 縦{paper_h_mm}mm）を超えています。再入力してください。")
 
 
-def get_paper_sizes(printer_name):
+def _parse_lpoptions(printer_name: str, prefix: str) -> list[str]:
+    """lpoptions -l の出力から指定 prefix の値リストを返す。"""
+    result = subprocess.run(["lpoptions", "-p", printer_name, "-l"],
+                            capture_output=True, text=True)
+    for line in result.stdout.splitlines():
+        if line.startswith(prefix):
+            _, values_str = line.split(":", 1)
+            return values_str.split()
+    return []
+
+
+def get_paper_sizes(printer_name: str) -> list[tuple[str, tuple[float, float]]]:
     """プリンターがサポートする用紙サイズを (表示名, (w_mm, h_mm)) のリストで返す。"""
     if IS_WSL:
         safe = printer_name.replace("'", "''")
@@ -189,30 +206,22 @@ $pd.PrinterSettings.PaperSizes | ForEach-Object {{ "$($_.PaperName),$($_.Width),
                 continue
         return items or _FALLBACK_PAPER_SIZES
     else:
-        result = subprocess.run(
-            ["lpoptions", "-p", printer_name, "-l"], capture_output=True, text=True,
-        )
-        for line in result.stdout.splitlines():
-            if line.startswith("PageSize/"):
-                _, values_str = line.split(":", 1)
-                items = []
-                for v in values_str.split():
-                    name = v.lstrip("*")
-                    dims = _CUPS_PAPER_SIZE_MM.get(name)
-                    if dims:
-                        items.append((f"{name} ({dims[0]}mm × {dims[1]}mm)", dims))
-                if items:
-                    return items
-        return _FALLBACK_PAPER_SIZES
+        items = []
+        for v in _parse_lpoptions(printer_name, "PageSize/"):
+            name = v.lstrip("*")
+            dims = _CUPS_PAPER_SIZE_MM.get(name)
+            if dims:
+                items.append((f"{name} ({dims[0]}mm × {dims[1]}mm)", dims))
+        return items or _FALLBACK_PAPER_SIZES
 
 
-def select_paper_size(printer_name):
+def select_paper_size(printer_name: str) -> tuple[float, float]:
     chosen = _choose("【印刷用紙のサイズを選んでください】", get_paper_sizes(printer_name),
                      display=lambda x: x[0])
     return chosen[1] if chosen else _FALLBACK_PAPER_SIZES[0][1]
 
 
-def get_printers():
+def get_printers() -> list[str]:
     if IS_WSL:
         output = _run_ps("Get-Printer | Select-Object -ExpandProperty Name")
         return [line.strip() for line in output.strip().splitlines() if line.strip()]
@@ -220,7 +229,7 @@ def get_printers():
     return [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
 
 
-def get_trays(printer_name):
+def get_trays(printer_name: str) -> list[str]:
     if IS_WSL:
         safe = printer_name.replace("'", "''")
         output = _run_ps(f"""
@@ -230,15 +239,11 @@ $pd.PrinterSettings.PrinterName = '{safe}'
 $pd.PrinterSettings.PaperSources | ForEach-Object {{ $_.SourceName }}
 """)
         return [line.strip() for line in output.strip().splitlines() if line.strip()]
-    result = subprocess.run(["lpoptions", "-p", printer_name, "-l"], capture_output=True, text=True)
-    for line in result.stdout.splitlines():
-        if line.startswith("InputSlot/"):
-            _, values_str = line.split(":", 1)
-            return [v.lstrip("*") for v in values_str.split()]
-    return ["Auto"]
+    values = _parse_lpoptions(printer_name, "InputSlot/")
+    return [v.lstrip("*") for v in values] if values else ["Auto"]
 
 
-def get_qualities(printer_name):
+def get_qualities(printer_name: str) -> list[tuple[str, str]]:
     """(表示名, 識別子) のリストを返す。識別子は WSL2=インデックス文字列、CUPS=オプション文字列。"""
     if IS_WSL:
         safe = printer_name.replace("'", "''")
@@ -261,36 +266,34 @@ $pd.PrinterSettings.PrinterResolutions | ForEach-Object {{ "$($_.Kind),$($_.X),$
                 display = f"{label} ({x}×{y} dpi)" if int(x) > 0 else label
             items.append((display, str(i)))
         return items
-    result = subprocess.run(["lpoptions", "-p", printer_name, "-l"], capture_output=True, text=True)
-    for line in result.stdout.splitlines():
-        if line.startswith("print-quality/"):
-            _, values_str = line.split(":", 1)
-            labels = {"3": "下書き (Draft)", "4": "標準 (Normal)", "5": "高品質 (High)"}
-            return [(labels.get(v.lstrip("*"), v.lstrip("*")), f"print-quality={v.lstrip('*')}")
-                    for v in values_str.split()]
-        if line.startswith("Resolution/"):
-            _, values_str = line.split(":", 1)
-            return [(v.lstrip("*"), f"Resolution={v.lstrip('*')}") for v in values_str.split()]
+    values = _parse_lpoptions(printer_name, "print-quality/")
+    if values:
+        labels = {"3": "下書き (Draft)", "4": "標準 (Normal)", "5": "高品質 (High)"}
+        return [(labels.get(v.lstrip("*"), v.lstrip("*")), f"print-quality={v.lstrip('*')}")
+                for v in values]
+    values = _parse_lpoptions(printer_name, "Resolution/")
+    if values:
+        return [(v.lstrip("*"), f"Resolution={v.lstrip('*')}") for v in values]
     return [("標準 (Normal)", "print-quality=4")]
 
 
-def select_printer():
+def select_printer() -> str | None:
     return _choose("【プリンターを選んでください】", get_printers(),
                    empty_msg="プリンターが見つかりませんでした。")
 
 
-def select_tray(printer_name):
+def select_tray(printer_name: str) -> str | None:
     return _choose("【給紙トレイを選んでください】", get_trays(printer_name),
                    empty_msg="トレイ情報を取得できませんでした。")
 
 
-def select_quality(printer_name):
+def select_quality(printer_name: str) -> str | None:
     chosen = _choose("【印刷品質を選んでください】", get_qualities(printer_name),
                      display=lambda x: x[0], empty_msg="印刷品質情報を取得できませんでした。")
     return chosen[1] if chosen else None
 
 
-def preview_image(image_path):
+def preview_image(image_path: str | Path) -> None:
     if IS_WSL:
         safe = _to_win_path(image_path).replace("'", "''")
         subprocess.Popen([_PS_EXE, "-NoProfile", "-Command", f"Invoke-Item '{safe}'"])
@@ -298,20 +301,21 @@ def preview_image(image_path):
         subprocess.Popen(["xdg-open", str(Path(image_path).resolve())])
 
 
-def print_borderless(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality):
+def print_borderless(image_path: str | Path, printer_name: str, paper_w_mm: float, paper_h_mm: float, tray: str | None, quality: str | None) -> None:
     if IS_WSL:
         _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality)
     else:
         _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray, quality)
 
 
-def _print_borderless_wsl(image_path, printer_name, paper_w_mm, paper_h_mm, tray_name, quality_idx):
+def _print_borderless_wsl(image_path: str | Path, printer_name: str, paper_w_mm: float, paper_h_mm: float, tray_name: str | None, quality_idx: str | None) -> None:
     w_hundredths = round(paper_w_mm / 25.4 * 100)
     h_hundredths = round(paper_h_mm / 25.4 * 100)
     safe_path    = _to_win_path(image_path).replace("'", "''")
     safe_printer = printer_name.replace("'", "''")
+    safe_tray    = tray_name.replace("'", "''") if tray_name else ""
     tray_script  = (
-        f"$src = $pd.PrinterSettings.PaperSources | Where-Object {{ $_.SourceName -eq '{tray_name.replace(chr(39), chr(39)*2)}' }} | Select-Object -First 1\n"
+        f"$src = $pd.PrinterSettings.PaperSources | Where-Object {{ $_.SourceName -eq '{safe_tray}' }} | Select-Object -First 1\n"
         f"if ($src) {{ $pd.DefaultPageSettings.PaperSource = $src }}"
         if tray_name else ""
     )
@@ -324,7 +328,7 @@ $pd.PrinterSettings.PrinterName = '{safe_printer}'
 $pd.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
 $tw = {w_hundredths}
 $th = {h_hundredths}
-$match = $pd.PrinterSettings.PaperSizes | Where-Object {{ [Math]::Abs($_.Width - $tw) -le 10 -and [Math]::Abs($_.Height - $th) -le 10 }} | Select-Object -First 1
+$match = $pd.PrinterSettings.PaperSizes | Where-Object {{ [Math]::Abs($_.Width - $tw) -le {PAPER_SIZE_TOLERANCE_HUNDREDTHS} -and [Math]::Abs($_.Height - $th) -le {PAPER_SIZE_TOLERANCE_HUNDREDTHS} }} | Select-Object -First 1
 if ($match) {{ $pd.DefaultPageSettings.PaperSize = $match; Write-Host "用紙サイズ: $($match.PaperName)" }}
 else {{ $pd.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize('Custom', $tw, $th); Write-Host "用紙サイズ: カスタム ($($tw/100*25.4)mm x $($th/100*25.4)mm)" }}
 {tray_script}
@@ -348,7 +352,7 @@ Write-Host '印刷ジョブを送信しました。'
         print(f"印刷エラー: {result.stderr.decode(_PS_ENCODING, errors='replace').strip()}")
 
 
-def _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tray_name, quality_opt):
+def _print_borderless_cups(image_path: str | Path, printer_name: str, paper_w_mm: float, paper_h_mm: float, tray_name: str | None, quality_opt: str | None) -> None:
     cmd = ["lp", "-d", printer_name,
            "-o", f"media=Custom.{paper_w_mm}x{paper_h_mm}mm", "-o", "fit-to-page",
            "-o", quality_opt]
@@ -362,42 +366,68 @@ def _print_borderless_cups(image_path, printer_name, paper_w_mm, paper_h_mm, tra
         print(f"印刷エラー: {result.stderr.strip()}")
 
 
-def generate_id_photo(input_path, output_path, id_w_mm, id_h_mm, paper_w_mm, paper_h_mm):
-    Image.MAX_IMAGE_PIXELS = None  # 高解像度カメラ画像の制限を解除
-    img = ImageOps.exif_transpose(Image.open(input_path)).convert("RGB")
-    W, H = img.size
-
-    # YOLOv8 ポーズ推定で最初の人物を検出
-    results = YOLO("yolov8n-pose.pt")(np.array(img), verbose=False)
+def _detect_pose(img: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """YOLO ポーズ推定を実行し、(kpts, conf, bbox_top) を返す。人物未検出時は ValueError。"""
+    results = YOLO(YOLO_MODEL)(img, verbose=False)
     if not results or not len(results[0].keypoints.xy):
         raise ValueError("人物を検出できませんでした。")
-
     kpts     = results[0].keypoints.xy[0].cpu().numpy()
     conf     = results[0].keypoints.conf[0].cpu().numpy()
-    bbox_top = results[0].boxes.xyxy[0][1].item()  # 頭頂部 y
+    bbox_top = results[0].boxes.xyxy[0][1].item()
+    return kpts, conf, bbox_top
 
-    # 肩キーポイント (インデックス 5, 6) から下端・水平中心を算出
-    shoulders = [kpts[i] for i in (5, 6) if conf[i] > 0.3]
+
+def _calc_crop_region(
+    kpts: np.ndarray,
+    conf: np.ndarray,
+    bbox_top: float,
+    img_w: int,
+    img_h: int,
+    id_w_mm: float,
+    id_h_mm: float,
+) -> tuple[float, float, float, float]:
+    """肩キーポイントから crop 座標 (left, top, right, bottom) を算出して返す。ズーム適用済み。肩未検出時は ValueError。"""
+    shoulders = [kpts[i] for i in SHOULDER_KEYPOINT_INDICES if conf[i] > KEYPOINT_CONFIDENCE_THRESHOLD]
     if not shoulders:
         raise ValueError("肩を検出できませんでした。")
     shoulder_y  = max(p[1] for p in shoulders)
     shoulder_cx = sum(p[0] for p in shoulders) / len(shoulders)
     span = shoulder_y - bbox_top  # 頭頂〜肩の距離
 
-    # クロップ範囲: 頭上に 5%、肩下に 2% の余白、指定アスペクト比
-    top    = max(0, bbox_top   - span * 0.05)
-    bottom = min(H, shoulder_y + span * 0.02)
+    # クロップ範囲: 頭上に HEAD_TOP_MARGIN、肩下に SHOULDER_BOTTOM_MARGIN の余白、指定アスペクト比
+    top    = max(0, bbox_top   - span * HEAD_TOP_MARGIN)
+    bottom = min(img_h, shoulder_y + span * SHOULDER_BOTTOM_MARGIN)
     crop_h = bottom - top
     crop_w = crop_h * (id_w_mm / id_h_mm)
     left   = max(0, shoulder_cx - crop_w / 2)
-    right  = min(W, shoulder_cx + crop_w / 2)
+    right  = min(img_w, shoulder_cx + crop_w / 2)
 
     # ズーム: 中心固定でクロップ範囲を縮小 → 拡大表示
     cx, cy = (left + right) / 2, (top + bottom) / 2
     half_w = (right - left) / 2 / ZOOM
     half_h = (bottom - top) / 2 / ZOOM
-    left, right = max(0, cx - half_w), min(W, cx + half_w)
-    top, bottom = max(0, cy - half_h), min(H, cy + half_h)
+    left  = max(0, cx - half_w)
+    right = min(img_w, cx + half_w)
+    top   = max(0, cy - half_h)
+    bottom = min(img_h, cy + half_h)
+
+    return left, top, right, bottom
+
+
+def generate_id_photo(
+    input_path: str | Path,
+    output_path: str | Path,
+    id_w_mm: float,
+    id_h_mm: float,
+    paper_w_mm: float,
+    paper_h_mm: float,
+) -> None:
+    Image.MAX_IMAGE_PIXELS = None  # 高解像度カメラ画像の制限を解除
+    img = ImageOps.exif_transpose(Image.open(input_path)).convert("RGB")
+    W, H = img.size
+
+    kpts, conf, bbox_top = _detect_pose(np.array(img))
+    left, top, right, bottom = _calc_crop_region(kpts, conf, bbox_top, W, H, id_w_mm, id_h_mm)
 
     # クロップ → リサイズ (アスペクト比保持, LANCZOS)
     cropped = img.crop((int(left), int(top), int(right), int(bottom)))
