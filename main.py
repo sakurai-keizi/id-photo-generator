@@ -122,8 +122,8 @@ def _input_mm(label):
         print("  正の数を入力してください。")
 
 
-def select_id_photo_size():
-    """証明写真サイズを選ぶ。カスタムを選んだ場合は寸法を手入力させる。"""
+def select_id_photo_size(paper_w_mm, paper_h_mm):
+    """証明写真サイズを選ぶ。カスタムを選んだ場合は用紙サイズ内に収まる寸法を手入力させる。"""
     options = list(ID_PHOTO_SIZES.items()) + [("カスタム入力", None)]
     chosen = _choose("【証明写真のサイズを選んでください】", options, display=lambda x: x[0])
     if chosen is None:
@@ -132,9 +132,12 @@ def select_id_photo_size():
     if size is not None:
         return size
     print("\n【カスタムサイズを入力してください】")
-    w = _input_mm("横幅")
-    h = _input_mm("縦幅")
-    return w, h
+    while True:
+        w = _input_mm("横幅")
+        h = _input_mm("縦幅")
+        if w <= paper_w_mm and h <= paper_h_mm:
+            return w, h
+        print(f"  用紙サイズ（横{paper_w_mm}mm × 縦{paper_h_mm}mm）を超えています。再入力してください。")
 
 
 def get_printers():
@@ -339,8 +342,8 @@ if __name__ == "__main__":
         print(f"エラー: {sys.argv[1]} が見つかりません")
         sys.exit(1)
 
-    id_w_mm, id_h_mm       = select_id_photo_size()
     paper_w_mm, paper_h_mm = select_from_menu("【印刷用紙のサイズを選んでください】", PAPER_SIZES)
+    id_w_mm, id_h_mm       = select_id_photo_size(paper_w_mm, paper_h_mm)
 
     generate_id_photo(sys.argv[1], sys.argv[2], id_w_mm, id_h_mm, paper_w_mm, paper_h_mm)
 
