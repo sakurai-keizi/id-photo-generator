@@ -412,12 +412,14 @@ def generate_id_photo(input_path, output_path, id_w_mm, id_h_mm, paper_w_mm, pap
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("使い方: uv run main.py <入力画像> <出力PNG>")
+    if len(sys.argv) < 2 or len(sys.argv) > 3:
+        print("使い方: uv run main.py <入力画像> [<出力PNG>]")
         sys.exit(1)
     if not Path(sys.argv[1]).exists():
         print(f"エラー: {sys.argv[1]} が見つかりません")
         sys.exit(1)
+
+    output_path = sys.argv[2] if len(sys.argv) == 3 else "/tmp/id_photo_output.png"
 
     printer = select_printer()
     if not printer:
@@ -426,14 +428,14 @@ if __name__ == "__main__":
     paper_w_mm, paper_h_mm = select_paper_size(printer)
     id_w_mm, id_h_mm       = select_id_photo_size(paper_w_mm, paper_h_mm)
 
-    generate_id_photo(sys.argv[1], sys.argv[2], id_w_mm, id_h_mm, paper_w_mm, paper_h_mm)
+    generate_id_photo(sys.argv[1], output_path, id_w_mm, id_h_mm, paper_w_mm, paper_h_mm)
 
     print("\nプレビューを開いています...")
-    preview_image(sys.argv[2])
+    preview_image(output_path)
 
     tray    = select_tray(printer)
     quality = select_quality(printer)
     ok = _choose("【印刷してもよいですか？（用紙・電源を確認してください）】",
                  ["はい、印刷する", "いいえ、中止する"])
     if ok == "はい、印刷する":
-        print_borderless(sys.argv[2], printer, paper_w_mm, paper_h_mm, tray, quality)
+        print_borderless(output_path, printer, paper_w_mm, paper_h_mm, tray, quality)
