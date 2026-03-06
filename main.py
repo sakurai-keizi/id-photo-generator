@@ -242,8 +242,12 @@ Add-Type -AssemblyName System.Drawing
 $img = [System.Drawing.Image]::FromFile('{safe_path}')
 $pd  = New-Object System.Drawing.Printing.PrintDocument
 $pd.PrinterSettings.PrinterName   = '{safe_printer}'
-$pd.DefaultPageSettings.Margins   = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
-$pd.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize('Custom', {w_hundredths}, {h_hundredths})
+$pd.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
+$tw = {w_hundredths}
+$th = {h_hundredths}
+$match = $pd.PrinterSettings.PaperSizes | Where-Object {{ [Math]::Abs($_.Width - $tw) -le 10 -and [Math]::Abs($_.Height - $th) -le 10 }} | Select-Object -First 1
+if ($match) {{ $pd.DefaultPageSettings.PaperSize = $match; Write-Host "用紙サイズ: $($match.PaperName)" }}
+else {{ $pd.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize('Custom', $tw, $th); Write-Host "用紙サイズ: カスタム ($($tw/100*25.4)mm x $($th/100*25.4)mm)" }}
 $src = $pd.PrinterSettings.PaperSources | Where-Object {{ $_.SourceName -eq '{safe_tray}' }} | Select-Object -First 1
 if ($src) {{ $pd.DefaultPageSettings.PaperSource = $src }}
 $res = $pd.PrinterSettings.PrinterResolutions[{quality_idx}]
