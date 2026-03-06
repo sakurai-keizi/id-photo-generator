@@ -419,7 +419,7 @@ if __name__ == "__main__":
         print(f"エラー: {sys.argv[1]} が見つかりません")
         sys.exit(1)
 
-    output_path = sys.argv[2] if len(sys.argv) == 3 else "/tmp/id_photo_output.png"
+    output_path = sys.argv[2] if len(sys.argv) == 3 else "id_photo_output.png"
 
     printer = select_printer()
     if not printer:
