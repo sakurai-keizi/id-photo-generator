@@ -363,4 +363,7 @@ if __name__ == "__main__":
     if printer:
         tray    = select_tray(printer)
         quality = select_quality(printer)
-        print_borderless(sys.argv[2], printer, paper_w_mm, paper_h_mm, tray, quality)
+        ok = _choose("【印刷してもよいですか？（用紙・電源を確認してください）】",
+                     ["はい、印刷する", "いいえ、中止する"])
+        if ok == "はい、印刷する":
+            print_borderless(sys.argv[2], printer, paper_w_mm, paper_h_mm, tray, quality)
